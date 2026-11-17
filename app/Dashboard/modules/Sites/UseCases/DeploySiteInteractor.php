@@ -36,6 +36,17 @@ final class DeploySiteInteractor
             throw new UnknownRelease("{$ref} is not a tag in the repository.");
         }
 
+        return $this->deploy($site, $ref, $runTests, $deployedBy);
+    }
+
+    /**
+     * Start the workflow for a site whose client folder and tag are already
+     * known to be valid, then record the deploy on the site.
+     *
+     * @throws DeployFailed when GitHub refuses the run
+     */
+    public function deploy(Site $site, string $ref, bool $runTests, string $deployedBy): Site
+    {
         $this->pipeline->dispatch($ref, [
             'client' => (string) $site->client,
             'run_tests' => $runTests ? 'yes' : 'no',

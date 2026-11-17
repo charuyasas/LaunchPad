@@ -59,6 +59,8 @@ Sites with a **client folder** can be deployed from their quick look. LaunchPad 
 
 3. Edit each Paylance-based site and fill in its **Client folder** (the `client` input of the workflow, e.g. `paylance`, `rasangi`).
 
+**Deploy all** (in the dock) deploys one tag to several sites at once: pick the tag, tick the sites (those already on that tag start unticked), choose whether to run tests, and LaunchPad starts one workflow run per site in parallel. If a site can't be started, the others still go ahead and the toast lists what didn't start.
+
 Only tags that exist in the repository can be deployed. Each site remembers its last deploy (tag, tests on/off, who, when). The token stays on the server and is never sent to the browser.
 
 ## Development

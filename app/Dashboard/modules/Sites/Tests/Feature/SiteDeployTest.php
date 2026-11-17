@@ -45,9 +45,9 @@ beforeEach(function () {
 /**
  * Fake GitHub: two pages of tags and an accepting dispatch endpoint.
  */
-function fakeGitHub(int $dispatchStatus = 204, array $dispatchBody = []): void
+function fakeGitHub(int $dispatchStatus = 204, array $dispatchBody = [], ?string $onlyFailClient = null): void
 {
-    Http::fake(function (Request $request) use ($dispatchStatus, $dispatchBody) {
+    Http::fake(function (Request $request) use ($dispatchStatus, $dispatchBody, $onlyFailClient) {
         if (str_starts_with($request->url(), TAGS_URL)) {
             return str_contains($request->url(), 'page=2')
                 ? Http::response([['name' => 'v1.0.0']])
@@ -59,6 +59,10 @@ function fakeGitHub(int $dispatchStatus = 204, array $dispatchBody = []): void
         }
 
         if ($request->url() === DISPATCH_URL) {
+            if ($onlyFailClient !== null && $request->data()['inputs']['client'] !== $onlyFailClient) {
+                return Http::response(null, 204);
+            }
+
             return Http::response($dispatchBody, $dispatchStatus);
         }
 
@@ -216,4 +220,167 @@ test('a client folder must be a plain folder name', function () {
         'base_url' => 'https://bad.test',
         'client' => '../etc',
     ])->assertSessionHasErrors('client');
+});
+
+// --- Bulk deploy ----------------------------------------------------------
+
+function addPaylanceSite(): void
+{
+    app(SiteRepository::class)->save(new Site(
+        id: 'paylance',
+        name: 'Paylance',
+        baseUrl: 'https://paylance.test',
+        versionPath: '/api/version',
+        status: 'live',
+        version: 'v1.0.2',
+        screenshotPath: null,
+        checkedAt: null,
+        client: 'paylance',
+    ));
+}
+
+/**
+ * @return list<string> the client folders that were dispatched, in order
+ */
+function dispatchedClients(): array
+{
+    return Http::recorded()
+        ->filter(fn (array $pair) => $pair[0]->url() === DISPATCH_URL)
+        ->map(fn (array $pair) => $pair[0]->data()['inputs']['client'])
+        ->values()
+        ->all();
+}
+
+test('bulk deploy runs the workflow once per selected site with the same tag and test choice', function () {
+    addPaylanceSite();
+    fakeGitHub();
+    $this->actingAs(User::factory()->create(['name' => 'Charitha']));
+
+    $this->post(route('deploy.bulk'), ['ref' => 'v1.0.2', 'run_tests' => false, 'sites' => ['rasangi', 'paylance']])
+        ->assertRedirect(route('dashboard'))
+        ->assertInertiaFlash('toast', [
+            'type' => 'success',
+            'message' => 'Deploying v1.0.2 to 2 sites.',
+            'link' => [
+                'label' => 'View on GitHub',
+                'url' => 'https://github.com/acme/paylance/actions/workflows/deploy-on-main.yml',
+            ],
+        ]);
+
+    expect(dispatchedClients())->toBe(['rasangi', 'paylance']);
+
+    Http::assertSent(fn (Request $request) => $request->url() === DISPATCH_URL
+        && $request->data()['ref'] === 'v1.0.2'
+        && $request->data()['inputs']['run_tests'] === 'no');
+
+    // Tags are fetched once for the whole batch, not once per site.
+    expect(Http::recorded()->filter(fn (array $pair) => str_starts_with($pair[0]->url(), TAGS_URL.'?per_page=100') && ! str_contains($pair[0]->url(), 'page=2'))->count())->toBe(1);
+
+    $repository = app(SiteRepository::class);
+    expect($repository->find('rasangi')?->lastDeploy)->toMatchArray(['ref' => 'v1.0.2', 'run_tests' => false, 'by' => 'Charitha'])
+        ->and($repository->find('paylance')?->lastDeploy)->toMatchArray(['ref' => 'v1.0.2']);
+});
+
+test('bulk deploy only touches the selected sites', function () {
+    addPaylanceSite();
+    fakeGitHub();
+    $this->actingAs(User::factory()->create());
+
+    $this->post(route('deploy.bulk'), ['ref' => 'v1.0.1', 'run_tests' => true, 'sites' => ['paylance']])
+        ->assertInertiaFlash('toast', [
+            'type' => 'success',
+            'message' => 'Deploying v1.0.1 to 1 site.',
+            'link' => [
+                'label' => 'View on GitHub',
+                'url' => 'https://github.com/acme/paylance/actions/workflows/deploy-on-main.yml',
+            ],
+        ]);
+
+    expect(dispatchedClients())->toBe(['paylance'])
+        ->and(app(SiteRepository::class)->find('rasangi')?->lastDeploy)->toBeNull();
+});
+
+test('bulk deploy rejects a tag that is not in the repository', function () {
+    addPaylanceSite();
+    fakeGitHub();
+    $this->actingAs(User::factory()->create());
+
+    $this->post(route('deploy.bulk'), ['ref' => 'not-a-tag', 'run_tests' => true, 'sites' => ['rasangi', 'paylance']])
+        ->assertSessionHasErrors('ref');
+
+    expect(dispatchedClients())->toBe([]);
+});
+
+test('one failing site does not stop the others', function () {
+    addPaylanceSite();
+    fakeGitHub(422, ['message' => 'Unexpected inputs provided'], onlyFailClient: 'rasangi');
+    $this->actingAs(User::factory()->create());
+
+    $this->post(route('deploy.bulk'), ['ref' => 'v1.0.2', 'run_tests' => true, 'sites' => ['rasangi', 'paylance']])
+        ->assertRedirect(route('dashboard'))
+        ->assertInertiaFlash('toast', [
+            'type' => 'warning',
+            'message' => 'Started 1 of 2 deploys of v1.0.2. Not started: Rasangi Electricals (Unexpected inputs provided).',
+            'link' => [
+                'label' => 'View on GitHub',
+                'url' => 'https://github.com/acme/paylance/actions/workflows/deploy-on-main.yml',
+            ],
+        ]);
+
+    $repository = app(SiteRepository::class);
+    expect(dispatchedClients())->toBe(['rasangi', 'paylance'])
+        ->and($repository->find('rasangi')?->lastDeploy)->toBeNull()
+        ->and($repository->find('paylance')?->lastDeploy)->toMatchArray(['ref' => 'v1.0.2']);
+});
+
+test('a selected site without a client folder is reported, not deployed', function () {
+    addPaylanceSite();
+    fakeGitHub();
+    $this->actingAs(User::factory()->create());
+
+    $this->post(route('deploy.bulk'), ['ref' => 'v1.0.2', 'run_tests' => true, 'sites' => ['textifys', 'paylance']])
+        ->assertInertiaFlash('toast', [
+            'type' => 'warning',
+            'message' => 'Started 1 of 2 deploys of v1.0.2. Not started: Textifys (no client folder).',
+            'link' => [
+                'label' => 'View on GitHub',
+                'url' => 'https://github.com/acme/paylance/actions/workflows/deploy-on-main.yml',
+            ],
+        ]);
+
+    expect(dispatchedClients())->toBe(['paylance']);
+});
+
+test('when every site fails the deploy is reported as an error', function () {
+    fakeGitHub(500, ['message' => 'Server Error']);
+    $this->actingAs(User::factory()->create());
+
+    $this->post(route('deploy.bulk'), ['ref' => 'v1.0.2', 'run_tests' => true, 'sites' => ['rasangi']])
+        ->assertInertiaFlash('toast', [
+            'type' => 'error',
+            'message' => 'No deploys started. Rasangi Electricals (Server Error).',
+        ]);
+});
+
+test('bulk deploy needs at least one site', function () {
+    fakeGitHub();
+    $this->actingAs(User::factory()->create());
+
+    $this->post(route('deploy.bulk'), ['ref' => 'v1.0.2', 'run_tests' => true, 'sites' => []])
+        ->assertSessionHasErrors('sites');
+
+    assertGitHubNotCalled();
+});
+
+test('bulk deploy is off until configured and closed to guests', function () {
+    Http::fake();
+
+    $this->post(route('deploy.bulk'), ['ref' => 'v1.0.2', 'sites' => ['rasangi']])->assertRedirect(route('login'));
+
+    config()->set('launchpad.deploy.token', null);
+    $this->actingAs(User::factory()->create())
+        ->post(route('deploy.bulk'), ['ref' => 'v1.0.2', 'run_tests' => true, 'sites' => ['rasangi']])
+        ->assertStatus(503);
+
+    assertGitHubNotCalled();
 });

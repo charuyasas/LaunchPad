@@ -1,10 +1,19 @@
 <script setup lang="ts">
 import { Head, router } from '@inertiajs/vue3';
-import { Plus, RefreshCw, Rocket, Search, SearchX, X } from '@lucide/vue';
+import {
+    Plus,
+    RefreshCw,
+    Rocket,
+    Search,
+    SearchX,
+    UploadCloud,
+    X,
+} from '@lucide/vue';
 import { onKeyStroke, useTimeAgo } from '@vueuse/core';
 import { computed, ref, useTemplateRef, watch } from 'vue';
 import AppDock from '@/components/launcher/AppDock.vue';
 import DockButton from '@/components/launcher/DockButton.vue';
+import BulkDeployDialog from '@/components/sites/BulkDeployDialog.vue';
 import DeleteSiteDialog from '@/components/sites/DeleteSiteDialog.vue';
 import DeploySiteDialog from '@/components/sites/DeploySiteDialog.vue';
 import SiteFormDialog from '@/components/sites/SiteFormDialog.vue';
@@ -147,6 +156,11 @@ function openEdit(site: SiteCard) {
     formOpen.value = true;
 }
 
+const bulkDeployOpen = ref(false);
+const canBulkDeploy = computed(
+    () => props.deployEnabled && props.sites.some((site) => site.client),
+);
+
 const deployOpen = ref(false);
 const deployingSite = ref<SiteCard | null>(null);
 
@@ -273,6 +287,13 @@ function openDelete(site: SiteCard) {
         >
             <RefreshCw :class="{ 'animate-spin': checkingAll }" />
         </DockButton>
+        <DockButton
+            v-if="canBulkDeploy"
+            label="Deploy all"
+            @click="bulkDeployOpen = true"
+        >
+            <UploadCloud />
+        </DockButton>
         <DockButton label="Add site" primary @click="openAdd">
             <Plus />
         </DockButton>
@@ -281,4 +302,5 @@ function openDelete(site: SiteCard) {
     <SiteFormDialog v-model:open="formOpen" :site="editingSite" />
     <DeleteSiteDialog v-model:open="deleteOpen" :site="deletingSite" />
     <DeploySiteDialog v-model:open="deployOpen" :site="deployingSite" />
+    <BulkDeployDialog v-model:open="bulkDeployOpen" :sites="sites" />
 </template>

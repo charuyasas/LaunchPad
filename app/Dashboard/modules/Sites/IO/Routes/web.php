@@ -14,6 +14,9 @@ Route::middleware(['auth'])->group(function () {
     Route::get('sites/{site}/preview', [SiteController::class, 'preview'])->name('sites.preview');
 
     Route::get('deploy/tags', [DeployController::class, 'tags'])->name('deploy.tags');
+    Route::post('deploy/bulk', [DeployController::class, 'bulk'])
+        ->middleware('throttle:5,1')
+        ->name('deploy.bulk');
     Route::post('sites/{site}/deploy', [DeployController::class, 'store'])
         ->middleware('throttle:10,1')
         ->name('sites.deploy');
